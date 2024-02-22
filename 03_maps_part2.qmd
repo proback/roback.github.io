@@ -1,0 +1,182 @@
+---
+title: "Working with geospatial data"
+sidebar: false
+format:
+  html: default
+editor_options: 
+  chunk_output_type: console
+---
+
+Based on Chapter 17 from Modern Data Science with R.
+
+You can download this .qmd file from [here](https://github.com/proback/264_fall_2024/blob/main/03_maps_part2.qmd). Just hit the Download Raw File button.
+
+```{r}
+#| message: false
+#| warning: false
+
+# Initial packages required (we'll be adding more)
+library(tidyverse)
+library(mdsr)      # package associated with our MDSR book
+library(sf)        
+# sf = support for simple features, a standardized way to encode spatial vector data
+library(ggspatial)
+```
+
+Our goal in "Maps - Part 2" is to learn about how to work with shapefiles, which are an open data structure for encoding spatial information. We will learn about projections (from three-dimensional space into two-dimensional space) and how to create informative, spatially-aware visualizations. We will just skim the surface in 264; for a much more thorough coverage, take our Spatial Statistics course!
+
+### Section 17.4: Extended example: NC Congressional Districts
+
+In North Carolina, there are about the same number of Democratic and Republican voters in the state. In the fall of 2020, 10 of North Carolina’s 13 congressional representatives were Republican (with one seat currently vacant). How can this be? In this case, geospatial data can help us understand.
+
+Note: the seats are currently 7 and 7 (NC earned an additional seat for 2022 after the 2020 Census), but 3 are expected to flip back to Republicans again after [yet another round of questionable redistricting](https://en.wikipedia.org/wiki/North_Carolina%27s_congressional_districts)
+
+```{r}
+#| message: false
+#| warning: false
+
+# To install fec 12 the first time, uncomment the code below (you might have to install devtools as well):
+# devtools::install_github("baumer-lab/fec12")
+library(fec12)
+print(results_house, width = Inf)
+results_house |>
+  group_by(state, district_id) |>
+  summarize(N = n())
+```
+
+**\[Pause to ponder:\]** Why are there 435 Representatives in the US House but 445 state/district combinations in our data? And how should we handle cases in which there's just not 1 Democrat vs 1 Republican?
+
+```{r}
+#| message: false
+#| warning: false
+
+# summary of the 13 congressional NC districts and the 2012 voting
+district_elections <- results_house |>
+  mutate(district = parse_number(district_id)) |>
+  group_by(state, district) |>
+  summarize(
+    N = n(), 
+    total_votes = sum(general_votes, na.rm = TRUE),
+    d_votes = sum(ifelse(party == "D", general_votes, 0), na.rm = TRUE),
+    r_votes = sum(ifelse(party == "R", general_votes, 0), na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    other_votes = total_votes - d_votes - r_votes,
+    r_prop = r_votes / total_votes,  
+    winner = ifelse(r_votes > d_votes, "Republican", "Democrat")
+  )
+nc_results <- district_elections |>
+  filter(state == "NC")
+nc_results |>                  
+  select(-state)
+```
+
+**\[Pause to ponder:\]**
+
+-   Explain how `sum(ifelse(party == "D", general_votes, 0), na.rm = TRUE)` works
+-   Explain why we use `.groups = "drop"`. Hint: try excluding that line and running again.
+-   Do you see any potential problems with `ifelse(r_votes > d_votes, "Republican", "Democrat")`?
+-   What observations can you make about the final `nc_results` table?
+
+```{r}
+# distribution of total number of votes is narrow by design
+nc_results |>
+  skim(total_votes) |>
+  select(-na)
+
+# compare total Dem and Rep votes across NC in 2012
+nc_results |>
+  summarize(
+    N = n(), 
+    state_votes = sum(total_votes), 
+    state_d = sum(d_votes), 
+    state_r = sum(r_votes)
+  ) |>
+  mutate(
+    d_prop = state_d / state_votes, 
+    r_prop = state_r / state_votes
+  )
+
+# Proportion of Rep votes by district
+nc_results |>
+  select(district, r_prop, winner) |>
+  arrange(desc(r_prop))
+```
+
+Now let's layer the results above on a map of North Carolina to create an effective visualization of the situation. How does the shape of districts where Republicans won compare with the shape where Democrats won?
+
+```{r}
+#| message: false
+#| warning: false
+
+# Download congressional district shapefiles for the 113th Congress from a UCLA website (don't sweat the details too much)
+src <- "http://cdmaps.polisci.ucla.edu/shp/districts113.zip"
+lcl_zip <- fs::path(tempdir(), "districts113.zip")
+download.file(src, destfile = lcl_zip)
+lcl_districts <- fs::path(tempdir(), "districts113")
+unzip(lcl_zip, exdir = lcl_districts)
+dsn_districts <- fs::path(lcl_districts, "districtShapes")
+
+# You can also downloaded zip file and uploaded it into R, but this uses a ton of space!
+# dsn_districts <- fs::path("Data/districtShapes")
+
+# read shapefiles into R as an sf object
+st_layers(dsn_districts)
+
+# be able to read as a data frame as well
+districts <- st_read(dsn_districts, layer = "districts113") |>
+  mutate(DISTRICT = parse_number(as.character(DISTRICT)))
+head(districts, width = Inf)
+class(districts)
+
+# create basic plot with NC congressional districts
+nc_shp <- districts |>
+  filter(STATENAME == "North Carolina")
+nc_shp |>
+  st_geometry() |>
+  plot(col = gray.colors(nrow(nc_shp)))
+
+# Append election results to geospatial data
+nc_merged <- nc_shp |>
+  st_transform(4326) |>
+  inner_join(nc_results, by = c("DISTRICT" = "district"))
+head(nc_merged, width = Inf)
+
+# Color based on winning party
+#   Note that geom_sf is part of ggplot2 package, while st_geometry is
+#   part of sf package
+nc <- ggplot(data = nc_merged, aes(fill = winner)) +
+  annotation_map_tile(zoom = 6, type = "osm", progress = "none") + 
+  geom_sf(alpha = 0.5) +
+  scale_fill_manual("Winner", values = c("blue", "red")) + 
+  geom_sf_label(aes(label = DISTRICT), fill = "white") + 
+  theme_void()
+nc
+
+# Color based on proportion Rep.  Be sure to let limits so centered at 0.5.
+# This is a choropleth map, where meaningful shading relates to some attribute
+nc +
+  aes(fill = r_prop) + 
+  scale_fill_distiller(
+    "Proportion\nRepublican", 
+    palette = "RdBu", 
+    limits = c(0.2, 0.8)
+  )
+
+# A leaflet map can allow us to zoom in and see where major cities fit, etc.
+library(leaflet)
+pal <- colorNumeric(palette = "RdBu", domain = c(0, 1))
+
+leaflet_nc <- leaflet(nc_merged) |>
+  addTiles() |>
+  addPolygons(
+    weight = 1, fillOpacity = 0.7, 
+    color = ~pal(1 - r_prop),   # so red association with Reps
+    popup = ~paste("District", DISTRICT, "</br>", round(r_prop, 4))
+  ) |>                          # popups show prop Republican
+  setView(lng = -80, lat = 35, zoom = 7)
+leaflet_nc
+```
+
+**\[Pause to ponder:\]** What have you learned by layering the voting data on the voting districts of North Carolina?

@@ -1,0 +1,128 @@
+---
+title: "Creating informative maps"
+sidebar: false
+format:
+  html: default
+editor_options: 
+  chunk_output_type: console
+---
+
+Based on Section 3.2.3 from Modern Data Science with R.
+
+You can download this .qmd file from [here](https://github.com/proback/264_fall_2024/blob/main/02_maps_part1.qmd). Just hit the Download Raw File button.
+
+```{r}
+#| message: false
+#| warning: false
+
+# Initial packages required (we'll be adding more)
+library(tidyverse)
+library(mdsr)      # package associated with our MDSR book
+```
+
+
+### Choropleth Maps
+
+When you have specific regions (e.g. countries, states, counties, census tracts,...) and a value associated with each region.
+
+A choropleth map will color the entire region according to the value. For example, let's consider state vaccination data from March 2021.
+
+```{r}
+#| message: false
+#| warning: false
+
+vaccines <- read_csv("https://proback.github.io/264_fall_2024/Data/vacc_Mar21.csv") 
+
+vacc_mar13 <- vaccines |>
+  filter(Date =="2021-03-13") |>
+  select(State, Date, people_vaccinated_per100, share_doses_used, Governor)
+
+vacc_mar13
+```
+
+The tricky part of choropleth maps is getting the shapes (polygons) that make up the regions. This is really a pretty complex set of lines for R to draw!
+
+Luckily, some maps are already created in R in the maps package.
+
+```{r}
+#| message: false
+#| warning: false
+
+library(maps)
+us_states <- map_data("state")
+head(us_states)
+# Note that points in the same "group" are connected with a line
+
+us_states |>
+  ggplot(mapping = aes(x = long, y = lat,
+                          group = group)) + 
+  geom_polygon(fill = "white", color = "black")
+```
+
+
+```{r}
+vacc_mar13 <- vacc_mar13 |>
+  mutate(State = str_to_lower(State))
+
+vacc_mar13 |>
+  right_join(us_states, by = c("State" = "region")) |>
+  rename(region = State) |>
+  ggplot(mapping = aes(x = long, y = lat,
+                          group = group)) + 
+  geom_polygon(aes(fill = people_vaccinated_per100), color = "black")
+```
+
+oops, New York appears to be a problem.
+
+```{r}
+vacc_mar13 <- vacc_mar13 |>
+  mutate(State = str_replace(State, " state", ""))
+
+vacc_mar13 |>
+  anti_join(us_states, by = c("State" = "region"))
+
+us_states |>
+  anti_join(vacc_mar13, by = c("region" = "State")) %>%
+  count(region)
+```
+
+Better.
+
+```{r}
+#| message: false
+#| warning: false
+
+library(viridis) # for color schemes
+vacc_mar13 |>
+  right_join(us_states, by = c("State" = "region")) |>
+  rename(region = State) |>
+  ggplot(mapping = aes(x = long, y = lat,
+                          group = group)) + 
+  geom_polygon(aes(fill = people_vaccinated_per100), color = "black") + 
+  labs(fill = "People Vaccinated\nper 100 pop.") +
+  # This scales the longitude and latitude so that the shapes look correct.
+  coord_map() + 
+  # This theme can give you a really clean look!
+  theme_void() +  
+  # you can change the fill scale for different color schemes.
+  scale_fill_viridis() 
+```
+
+You can also use a categorical variable to color regions:
+
+```{r}
+vacc_mar13 |>
+  right_join(us_states, by = c("State" = "region")) |>
+  rename(region = State) |>
+  ggplot(mapping = aes(x = long, y = lat,
+                          group = group)) + 
+  geom_polygon(aes(fill = Governor), color = "darkgrey", linewidth = 0.2) + 
+  labs(fill = "Governor") +
+  # This scales the longitude and latitude so that the shapes look correct.
+  coord_map() + 
+  # This theme can give you a really clean look!
+  theme_void() +  
+  # you can change the fill scale for different color schemes.
+  scale_fill_manual(values = c("blue", "red")) 
+```
+
